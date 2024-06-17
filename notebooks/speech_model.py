@@ -57,30 +57,35 @@ class SpeechDataset(Dataset):
         return self.label_encoder.inverse_transform([encoded_label])[0]
     
 class CNNBiLSTM(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, num_frames):
         super(CNNBiLSTM, self).__init__()
         self.cnn = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
+            nn.BatchNorm2d(32),
             nn.MaxPool2d(kernel_size=2, stride=2),  # Output: (batch_size, 32, num_frames//2, num_features//2)
             nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
+            nn.BatchNorm2d(64),
             nn.MaxPool2d(kernel_size=2, stride=2),   # Output: (batch_size, 64, num_frames//4, num_features//4)
             nn.Flatten()
         )
         
         # Compute the flattened size after CNN layers
-        num_frames = 1000
         num_features = 13
         cnn_output_size = 64 * (num_frames // 4) * (num_features // 4)
         
         self.bilstm = nn.LSTM(input_size=cnn_output_size, hidden_size=128, num_layers=2, batch_first=True, bidirectional=True)
+        self.dropout = nn.Dropout(0.5)
         self.fc = nn.Linear(128 * 2, num_classes)
+        self.layer_norm = nn.LayerNorm(128 * 2)  # Apply LayerNorm after LSTM output
         
     def forward(self, x):
         x = self.cnn(x)
         x = x.unsqueeze(1)  # Add time dimension for LSTM
         x, _ = self.bilstm(x)
+        x = self.layer_norm(x)
+        x = self.dropout(x)
         x = self.fc(x[:, -1, :])
         return x
 
@@ -120,13 +125,14 @@ def validate(model, dataloader, criterion, device):
 
 def main(train_corpus:list[dict], val_corpus:list[dict], test_corpus:list[dict]):
     
+    num_frames = 1000
     print("Generating train dataset")
     
     train_audio_path, train_transcript = [],[]
     for files in train_corpus:
         train_audio_path.append(files["file"])
         train_transcript.append(files["transcript"])
-    train_dataset = SpeechDataset(train_audio_path, train_transcript)
+    train_dataset = SpeechDataset(train_audio_path, train_transcript, target_num_frames=num_frames)
     
         
     num_classes = train_dataset.get_num_classes()
@@ -137,7 +143,7 @@ def main(train_corpus:list[dict], val_corpus:list[dict], test_corpus:list[dict])
     for files in val_corpus:
         val_audio_path.append(files["file"])
         val_transcript.append(files["transcript"])
-    val_dataset = SpeechDataset(val_audio_path, val_transcript)
+    val_dataset = SpeechDataset(val_audio_path, val_transcript, target_num_frames=num_frames)
     
     print("Generating test dataset")
     
@@ -145,35 +151,48 @@ def main(train_corpus:list[dict], val_corpus:list[dict], test_corpus:list[dict])
     for files in test_corpus:
         test_audio_path.append(files["file"])
         test_transcript.append(files["transcript"])
-    test_dataset = SpeechDataset(test_audio_path, test_transcript)
+    test_dataset = SpeechDataset(test_audio_path, test_transcript, target_num_frames=num_frames)
     
-    train_size = 10000
-    train_sampler = SubsetRandomSampler(np.arange(train_size))
     batch_size = 64
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
-    val_dataloader = DataLoader(val_dataset, batch_size=len(val_dataset), shuffle=False)
-    test_dataloader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False)
+    
+    # train_size = 10000
+    # train_sampler = SubsetRandomSampler(np.arange(train_size))
+    # train_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
+    
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     
     
     print("Model loading: ")
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = CNNBiLSTM(num_classes=num_classes).to(device)
+    model = CNNBiLSTM(num_classes=num_classes, num_frames = num_frames).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
 
     print("training start:")
     
     num_epochs = 10
     for epoch in range(num_epochs):
+        logging.info(f"entered epoch: {epoch}")
         train_loss = train(model, train_dataloader, criterion, optimizer, device)
+        logging.info(f"train loss calculated for epoch {epoch}:")
         val_loss = validate(model, val_dataloader, criterion, device)
+        logging.info(f"val loss calculated for epoch {epoch}:")
         
         print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
     test_loss = validate(model, test_dataloader, criterion, device)
     print("------------------------------------")
     print(f'Final Test Loss: {test_loss:.4f}')
+    
+    print("------------------------------------")
+    
+    
+    
+    return model, train_dataset
+
     
 
     
@@ -192,24 +211,14 @@ def corpus(mode="train"):
     
     return mode_corpus
 
-if __name__ == "__main__":
-    
-    
-    train_corpus = corpus("train")
 
-    val_corpus = corpus("dev")
-
-    test_corpus = corpus("test")
-    
-    main(train_corpus, val_corpus, test_corpus)
-    
 def get_predictions(test_audio, model, train_dataset):
     # Create a SpeechDataset instance for the single test audio
     test_audio_path = [test_audio["file"]]
     test_transcript = [test_audio["transcript"]]
     test_dataset = SpeechDataset(test_audio_path, test_transcript)
     
-    # Use the __getitem__ method to get the processed input and label
+    
     inputs, label = test_dataset[0]
     inputs = inputs.unsqueeze(0)  # Add batch dimension
 
@@ -223,3 +232,28 @@ def get_predictions(test_audio, model, train_dataset):
     
     print(f"Original transcript: {test_transcript[0]}")
     print(f"Predicted transcript: {predicted_transcript}")
+
+if __name__ == "__main__":
+    
+    
+    train_corpus = corpus("train")
+
+    val_corpus = corpus("dev")
+
+    test_corpus = corpus("test")
+    
+    model, train_dataset = main(train_corpus, val_corpus, val_corpus)
+    
+    
+    model_path = r"models"
+    curr_notebook_dir = os.getcwd()
+    parent_dir = os.path.abspath(os.path.join(curr_notebook_dir,os.pardir))
+    model_path_whole = os.path.join(parent_dir,model_path)
+    
+    torch.save(model,os.path.join(model_path_whole,"speech_model.pt"))
+    
+    
+    randtestidx = np.random.randint(0, len(val_corpus))
+    test_data = val_corpus[randtestidx]
+    get_predictions(test_data, model, train_dataset)
+    
