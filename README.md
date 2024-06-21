@@ -17,7 +17,7 @@ This application utilizes Deep Neural Networks (DNNs) for speech recognition and
 - PyTorch
 - NumPy
 - Scikit-learn
-- Other dependencies listed in requirements.txt.
+- Other dependencies listed in requirements.txt (conda dependencies).
 
 ## Setup Instructions
 1. **Clone Repository:**
