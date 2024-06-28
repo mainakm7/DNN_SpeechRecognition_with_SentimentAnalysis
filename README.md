@@ -1,4 +1,4 @@
-# DNN based Speech Recognition and Sentiment Analysis Application
+# DNN based Speech Recognition and Sentiment Analysis Application (in production)
 
 ## Overview
 This application utilizes Deep Neural Networks (DNNs) for speech recognition and sentiment analysis. It integrates models for converting speech to text and performing sentiment analysis on movie reviews.
